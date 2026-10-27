@@ -1,0 +1,21 @@
+[package]
+name = "powermetrics"
+version = "0.1.0"
+edition = "2024"
+description = "mesh-llm plugin: energy per output token from GPU power and local inference"
+license = "Apache-2.0"
+repository = "https://github.com/Mesh-LLM/powermetrics-plugin"
+publish = false
+
+[dependencies]
+# mesh-llm main with plugin status contributions (#2601) and local inference
+# observation (#2608).
+mesh-llm-plugin = { git = "https://github.com/Mesh-LLM/mesh-llm.git", rev = "3c8fb75a45fd7b85cf5d3b867edacc39b96e4b3f" }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["full"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+macmon = { version = "0.10", default-features = false }
+
+[workspace]
