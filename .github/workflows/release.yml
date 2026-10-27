@@ -21,15 +21,18 @@ jobs:
         include:
           - target: aarch64-apple-darwin
             runner: macos-15
+            exe: ''
           - target: x86_64-unknown-linux-gnu
             runner: ubuntu-22.04
+            exe: ''
           - target: aarch64-unknown-linux-gnu
             runner: ubuntu-22.04-arm
+            exe: ''
           - target: x86_64-pc-windows-msvc
             runner: windows-2022
+            exe: .exe
     env:
-      PYTHON: ${{ runner.os == 'Windows' && 'python' || 'python3' }}
-      EXE: ${{ runner.os == 'Windows' && '.exe' || '' }}
+      EXE: ${{ matrix.exe }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -55,14 +58,18 @@ jobs:
         run: cargo build --locked --release
       - name: Package
         shell: bash
-        run: $PYTHON scripts/package.py "target/release/powermetrics-plugin$EXE" "${{ matrix.target }}"
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" = Windows ]; then python=python; else python=python3; fi
+          $python scripts/package.py "target/release/powermetrics-plugin$EXE" "${{ matrix.target }}"
       - name: Smoke the packaged archive
         shell: bash
         run: |
           set -euo pipefail
+          if [ "$RUNNER_OS" = Windows ]; then python=python; else python=python3; fi
           archive=$(ls dist/powermetrics-plugin-${{ matrix.target }}.* | grep -v '\.sha256$')
           t=$(mktemp -d)
-          $PYTHON -c 'import shutil, sys; shutil.unpack_archive(sys.argv[1], sys.argv[2])' "$archive" "$t"
+          $python -c 'import shutil, sys; shutil.unpack_archive(sys.argv[1], sys.argv[2])' "$archive" "$t"
           grep -q 'command = "powermetrics-plugin"' "$t/powermetrics-plugin/plugin.toml"
           # Outside a host the plugin must start, then stop for want of an endpoint.
           set +e
