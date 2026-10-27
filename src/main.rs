@@ -1,5 +1,5 @@
-//! powermetrics: a mesh-llm plugin that measures the energy its node spends
-//! serving and shows it in `GET /api/status` under `plugins.powermetrics`.
+//! powermetrics-plugin: a mesh-llm plugin that measures the energy its node spends
+//! serving and shows it in `GET /api/status` under `plugins.powermetrics-plugin`.
 //!
 //! It reads GPU power (`nvidia-smi`, or macmon on Apple Silicon) and follows
 //! what the node executes through the local inference observation feed, then
@@ -9,8 +9,8 @@
 //!
 //! ```toml
 //! [[plugin]]
-//! name = "powermetrics"
-//! command = "/path/to/powermetrics"
+//! name = "powermetrics-plugin"
+//! command = "/path/to/powermetrics-plugin"
 //! allow_inference_observation = true
 //! ```
 
@@ -27,7 +27,7 @@ use serde::Serialize;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
-const NAME: &str = "powermetrics";
+const NAME: &str = "powermetrics-plugin";
 const PUBLISH_EVERY: Duration = Duration::from_secs(5);
 
 /// Version 1 of this plugin's `/api/status` snapshot.

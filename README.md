@@ -1,4 +1,4 @@
-# powermetrics
+# powermetrics-plugin
 
 A [mesh-llm](https://github.com/Mesh-LLM/mesh-llm) plugin that measures how
 much energy its node spends per output token, from the GPU's own power sensor,
@@ -6,7 +6,7 @@ and shows it in the node's `GET /api/status`:
 
 ```json
 "plugins": {
-  "powermetrics": {
+  "powermetrics-plugin": {
     "schema_version": 1,
     "state": "ready",
     "received_at_unix_ms": 1793404800000,
@@ -41,7 +41,7 @@ plugin's:
 
 The rates stay `null` until there is something to divide. The plugin publishes
 every 5 s, and nothing at all until its first power reading, so a node without
-a supported sensor has no `powermetrics` entry.
+a supported sensor has no `powermetrics-plugin` entry.
 
 ## Supported hardware
 
@@ -79,13 +79,29 @@ asked. It is the first step of
 [mesh-llm#2320](https://github.com/Mesh-LLM/mesh-llm/issues/2320): a seller can
 only price a GPU against its electricity once the energy per token is known.
 
-## Build and run
+## Install
 
-It needs a host with the `local_inference_observation.v1` and
-`plugin_status.v1` capabilities
+```sh
+mesh-llm plugins install Mesh-LLM/powermetrics-plugin
+```
+
+Release archives are built for macOS on Apple Silicon, Linux x86_64 and
+ARM64, and Windows x86_64. The plugin needs a host with the
+`local_inference_observation.v1` and `plugin_status.v1` capabilities
 ([mesh-llm#2608](https://github.com/Mesh-LLM/mesh-llm/pull/2608) and
 [#2601](https://github.com/Mesh-LLM/mesh-llm/pull/2601)), and refuses to
 initialize on an older one.
+
+The observation feed is off unless the operator turns it on for this plugin,
+so it needs, in the node's config:
+
+```toml
+[[plugin]]
+name = "powermetrics-plugin"
+allow_inference_observation = true
+```
+
+## Build from source
 
 ```sh
 cargo build --release
@@ -93,13 +109,12 @@ cargo build --release
 
 ```toml
 [[plugin]]
-name = "powermetrics"
-command = "/absolute/path/to/target/release/powermetrics"
+name = "powermetrics-plugin"
+command = "/absolute/path/to/target/release/powermetrics-plugin"
 allow_inference_observation = true
 ```
 
-The observation feed is off unless the operator turns it on for this plugin,
-so `allow_inference_observation = true` is required.
+Releasing is described in [RELEASING.md](RELEASING.md).
 
 ## License
 

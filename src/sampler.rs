@@ -94,7 +94,7 @@ async fn read_rounds<R: AsyncBufRead + Unpin>(
             }
             Pushed::Complete(None) if !measured => {
                 eprintln!(
-                    "powermetrics: nvidia-smi does not report power draw for every GPU; no readings"
+                    "powermetrics-plugin: nvidia-smi does not report power draw for every GPU; no readings"
                 );
                 return Ok(());
             }
@@ -111,7 +111,7 @@ pub fn start(readings: mpsc::UnboundedSender<(&'static str, Reading)>) {
     apple::start(readings.clone());
     tokio::spawn(async move {
         if let Err(error) = nvidia::sample(readings).await {
-            eprintln!("powermetrics: nvidia-smi unavailable: {error:#}");
+            eprintln!("powermetrics-plugin: nvidia-smi unavailable: {error:#}");
         }
     });
 }
@@ -213,7 +213,7 @@ mod apple {
                 let mut sampler = match macmon::Sampler::new() {
                     Ok(sampler) => sampler,
                     Err(error) => {
-                        eprintln!("powermetrics: macmon unavailable: {error}");
+                        eprintln!("powermetrics-plugin: macmon unavailable: {error}");
                         return;
                     }
                 };
@@ -228,21 +228,21 @@ mod apple {
                                 super::MacmonReading::Skip => {}
                                 super::MacmonReading::NoSource => {
                                     eprintln!(
-                                        "powermetrics: macmon reads the GPU at 0 W; no readings"
+                                        "powermetrics-plugin: macmon reads the GPU at 0 W; no readings"
                                     );
                                     return;
                                 }
                             }
                         }
                         Err(error) => {
-                            eprintln!("powermetrics: macmon stopped: {error}");
+                            eprintln!("powermetrics-plugin: macmon stopped: {error}");
                             return;
                         }
                     }
                 }
             });
         if let Err(error) = spawned {
-            eprintln!("powermetrics: macmon sampler not started: {error}");
+            eprintln!("powermetrics-plugin: macmon sampler not started: {error}");
         }
     }
 }

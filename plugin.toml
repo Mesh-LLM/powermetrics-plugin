@@ -1,2 +1,4 @@
-name = "powermetrics"
+name = "powermetrics-plugin"
 version = "0.1.0"
+description = "Measure the energy this node spends per output token."
+command = "powermetrics-plugin"
