@@ -1,5 +1,6 @@
-//! GPU power readings: from `nvidia-smi` on any host, and on Apple Silicon
-//! from IOReport through macmon. Ported from mesh-llm #2518.
+//! GPU power readings: from `nvidia-smi` on any host, on Apple Silicon from
+//! IOReport through macmon, and from the AMD driver where no NVIDIA GPU is
+//! found (see `amd`). Ported from mesh-llm #2518.
 //!
 //! One `nvidia-smi` process streams a reading per GPU every second, and each
 //! round is summed into one reading for the node. A round only counts when
@@ -104,14 +105,23 @@ async fn read_rounds<R: AsyncBufRead + Unpin>(
     Ok(())
 }
 
+mod amd;
+
 /// Starts every source this machine has; each sends its readings and the name
-/// it reports them under. Sources that are missing end quietly.
+/// it reports them under. Sources that are missing end quietly. AMD is read
+/// only where `nvidia-smi` finds no GPU, so a hybrid machine (an AMD APU next
+/// to an NVIDIA card) doesn't mix two sources into one node reading.
 pub fn start(readings: mpsc::UnboundedSender<(&'static str, Reading)>) {
     #[cfg(target_os = "macos")]
     apple::start(readings.clone());
     tokio::spawn(async move {
-        if let Err(error) = nvidia::sample(readings).await {
-            eprintln!("powermetrics-plugin: nvidia-smi unavailable: {error:#}");
+        match nvidia::sample(readings.clone()).await {
+            Ok(true) => {}
+            Ok(false) => amd::start(readings),
+            Err(error) => {
+                eprintln!("powermetrics-plugin: nvidia-smi unavailable: {error:#}");
+                amd::start(readings);
+            }
         }
     });
 }
@@ -126,9 +136,10 @@ mod nvidia {
 
     const SOURCE: &str = "nvidia-smi";
 
+    /// `Ok(false)` when `nvidia-smi` runs but lists no GPU.
     pub(super) async fn sample(
         readings: mpsc::UnboundedSender<(&'static str, Reading)>,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let listing = Command::new("nvidia-smi")
             .args(["--query-gpu=index", "--format=csv,noheader"])
             .stdin(Stdio::null())
@@ -141,7 +152,7 @@ mod nvidia {
             .filter(|line| !line.trim().is_empty())
             .count();
         if !listing.status.success() || gpus == 0 {
-            return Ok(());
+            return Ok(false);
         }
         // `kill_on_drop` ends nvidia-smi with the plugin when it returns; a
         // plugin killed outright can leave it looping on Windows.
@@ -166,6 +177,7 @@ mod nvidia {
             let _ = readings.send((SOURCE, (super::unix_now_ns(), total)));
         })
         .await
+        .map(|()| true)
     }
 }
 

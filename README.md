@@ -51,7 +51,9 @@ a supported sensor has no `powermetrics-plugin` entry.
 | Apple Silicon | IOReport through [macmon](https://github.com/vladkens/macmon), no sudo | The GPU's share of the SoC. |
 | NVIDIA Jetson | none | The integrated GPU reports no board power, so no readings. |
 | macOS VM | none | The GPU reads 0 W, which is treated as no source. |
-| AMD, Intel | not yet | |
+| AMD, Windows | ADLX (`amdadlx64.dll`, installed by the Adrenalin driver) | Read only when `nvidia-smi` finds no GPU. On an APU the GPU figure can include shared SoC power. |
+| AMD, Linux | amdgpu hwmon (`power1_average` or `power1_input`) | Read only when `nvidia-smi` finds no GPU. |
+| Intel | not yet | |
 
 Board power covers the GPU only, not the CPU, memory or power supply, so the
 figures are estimates, labelled with their source.
