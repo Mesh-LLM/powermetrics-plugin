@@ -22,4 +22,7 @@ macmon = { version = "0.10", default-features = false }
 # ADLX, the AMD driver's library, is loaded at run time: no AMD driver, no source.
 libloading = "0.8"
 
+[dev-dependencies]
+serde_json = "1"
+
 [workspace]

@@ -105,6 +105,30 @@ name = "powermetrics-plugin"
 allow_inference_observation = true
 ```
 
+## Price floor
+
+Give the plugin what you pay for electricity and it also reports what a
+million output tokens cost you (mesh-llm #2320, step 2):
+
+```toml
+[[plugin]]
+name = "powermetrics-plugin"
+allow_inference_observation = true
+args = ["--electricity-price-per-kwh", "0.25", "--currency", "EUR"]
+```
+
+`data` then carries `electricity_price_per_kwh`, `currency`, and two costs, in
+the same currency:
+
+- `cost_per_1m_output_tokens`: on top of the idle draw, the floor for a machine
+  that runs anyway;
+- `cost_per_1m_output_tokens_total`: idle draw included, the floor for a
+  machine that runs only to serve.
+
+They follow the energy rates, so they stay `null` until those are measured. The
+figures cover the GPU's own sensor, not the rest of the machine, so they are a
+lower bound. An unknown or malformed argument stops the plugin at startup.
+
 ## Build from source
 
 ```sh

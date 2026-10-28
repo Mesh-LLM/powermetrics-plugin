@@ -13,8 +13,12 @@
 //! command = "/path/to/powermetrics-plugin"
 //! allow_inference_observation = true
 //! ```
+//!
+//! With an electricity price in its `args`, it also reports what a million
+//! output tokens cost (see `price`).
 
 mod meter;
+mod price;
 mod sampler;
 mod settle;
 
@@ -41,9 +45,11 @@ struct Snapshot {
     lost_events: u64,
     #[serde(flatten)]
     energy: meter::EnergyStatusPayload,
+    #[serde(flatten)]
+    cost: Option<price::CostPayload>,
 }
 
-async fn run(mut context: PluginContext<'static>) {
+async fn run(mut context: PluginContext<'static>, tariff: Option<price::Tariff>) {
     let (readings_tx, mut readings) = mpsc::unbounded_channel();
     sampler::start(readings_tx);
     let mut feed = match context.subscribe_inference_observation().await {
@@ -88,10 +94,12 @@ async fn run(mut context: PluginContext<'static>) {
             }
             _ = publish.tick() => {
                 let Some(source) = source else { continue };
+                let energy = settler.meter.status(source);
                 let snapshot = Snapshot {
                     last_reading_unix_ns: last_reading,
                     lost_events,
-                    energy: settler.meter.status(source),
+                    cost: tariff.as_ref().map(|tariff| tariff.cost(&energy)),
+                    energy,
                 };
                 if let Err(error) = context.publish_status(&snapshot, PUBLISH_EVERY * 3).await {
                     eprintln!("{NAME}: status not published: {error}");
@@ -103,6 +111,7 @@ async fn run(mut context: PluginContext<'static>) {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let tariff = price::Tariff::from_args(std::env::args().skip(1))?;
     let metadata = PluginMetadata::new(
         NAME,
         env!("CARGO_PKG_VERSION"),
@@ -120,12 +129,49 @@ async fn main() -> anyhow::Result<()> {
             .item(plugin_status(1).required(true))
             .build(),
     );
-    let plugin = SimplePlugin::new(metadata).on_initialized(|context| {
+    let plugin = SimplePlugin::new(metadata).on_initialized(move |context| {
         let context = context.owned();
+        let tariff = tariff.clone();
         Box::pin(async move {
-            tokio::spawn(run(context));
+            tokio::spawn(run(context, tariff));
             Ok(())
         })
     });
     PluginRuntime::run(plugin).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn snapshot(tariff: Option<price::Tariff>) -> serde_json::Value {
+        let energy = meter::EnergyStatusPayload {
+            source: "adlx",
+            wh_per_1k_output_tokens: Some(0.4),
+            wh_per_1k_output_tokens_total: Some(0.6),
+            ..meter::EnergyStatusPayload::default()
+        };
+        serde_json::to_value(Snapshot {
+            last_reading_unix_ns: None,
+            lost_events: 0,
+            cost: tariff.as_ref().map(|tariff| tariff.cost(&energy)),
+            energy,
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn cost_fields_appear_only_with_a_tariff() {
+        let plain = snapshot(None);
+        assert_eq!(plain["source"], "adlx");
+        assert!(plain.get("cost_per_1m_output_tokens").is_none());
+        assert!(plain.get("electricity_price_per_kwh").is_none());
+
+        let args = ["--electricity-price-per-kwh", "0.25", "--currency", "EUR"].map(String::from);
+        let priced = snapshot(price::Tariff::from_args(args).unwrap());
+        assert_eq!(priced["electricity_price_per_kwh"], 0.25);
+        assert_eq!(priced["currency"], "EUR");
+        assert!((priced["cost_per_1m_output_tokens"].as_f64().unwrap() - 0.1).abs() < 1e-12);
+        assert!((priced["cost_per_1m_output_tokens_total"].as_f64().unwrap() - 0.15).abs() < 1e-12);
+    }
 }
