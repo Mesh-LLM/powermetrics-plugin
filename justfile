@@ -1,3 +1,6 @@
+# Cargo names the host binary with .exe on Windows.
+exe := if os_family() == "windows" { ".exe" } else { "" }
+
 build:
     cargo build --locked
 
@@ -10,7 +13,7 @@ verify:
 # Build a release binary and package it for this machine's target triple.
 package target:
     cargo build --locked --release
-    python3 scripts/package.py target/release/powermetrics-plugin '{{target}}'
+    python3 scripts/package.py target/release/powermetrics-plugin{{exe}} '{{target}}'
 
 clean:
     cargo clean

@@ -43,8 +43,8 @@ jobs:
         run: |
           set -euo pipefail
           v=${GITHUB_REF_NAME#v}
-          grep -qx "version = \"$v\"" Cargo.toml
-          grep -qx "version = \"$v\"" plugin.toml
+          grep -qxF "version = \"$v\"" Cargo.toml
+          grep -qxF "version = \"$v\"" plugin.toml
       - name: Install Rust if the runner has none
         shell: bash
         run: |
