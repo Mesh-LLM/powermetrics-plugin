@@ -176,7 +176,10 @@ mod nvidia {
             .spawn()
             .context("start nvidia-smi power sampling")?;
         // Held until sampling ends, since closing the job ends nvidia-smi.
-        // Without it the readings still work; only that cleanup is lost.
+        // Without it the readings still work; only that cleanup is lost. A
+        // plugin killed between spawn and assignment still leaves one behind:
+        // starting it suspended would close that gap, which tokio's Command
+        // does not offer.
         #[cfg(windows)]
         let _job = match job.and_then(|job| {
             let process = child.raw_handle().ok_or(std::io::ErrorKind::NotFound)?;
