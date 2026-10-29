@@ -1,9 +1,12 @@
 //! AMD GPU power, for machines where `nvidia-smi` finds no GPU: on Windows
 //! from ADLX, the library the Adrenalin driver installs (`amdadlx64.dll`), and
 //! on Linux from the amdgpu driver's hwmon files. Each round sums the AMD GPUs
-//! that report power, once a second. On an APU the driver's figure is the
-//! integrated GPU's own rail where it reports one, which can still include
-//! some shared SoC power.
+//! that report power, once a second.
+//!
+//! An APU's figure includes its CPU cores (the kernel documents it for hwmon,
+//! and ADLX follows a CPU-only load), so it is published under its own source,
+//! `adlx-apu` or `amdgpu-apu`. Where a discrete AMD GPU reports power, only the
+//! discrete GPUs are read, under `adlx` or `amdgpu`.
 
 use super::Reading;
 use tokio::sync::mpsc;
@@ -31,7 +34,7 @@ fn run(readings: mpsc::UnboundedSender<(&'static str, Reading)>) {
     #[cfg(windows)]
     let (source, mut read) = match adlx::Adlx::open() {
         Ok(Some(adlx)) => (
-            "adlx",
+            if adlx.apu { "adlx-apu" } else { "adlx" },
             Box::new(move || adlx.read()) as Box<dyn FnMut() -> Option<f64>>,
         ),
         Ok(None) => return,
@@ -42,12 +45,12 @@ fn run(readings: mpsc::UnboundedSender<(&'static str, Reading)>) {
     };
     #[cfg(target_os = "linux")]
     let (source, mut read) = {
-        let files = hwmon::power_files(std::path::Path::new("/sys/class/drm"));
-        if files.is_empty() {
+        let cards = hwmon::power_files(std::path::Path::new("/sys/class/drm"));
+        let Some((files, apu)) = hwmon::choose(cards) else {
             return;
-        }
+        };
         (
-            "amdgpu",
+            if apu { "amdgpu-apu" } else { "amdgpu" },
             Box::new(move || hwmon::read_watts(&files)) as Box<dyn FnMut() -> Option<f64>>,
         )
     };
@@ -92,8 +95,13 @@ mod adlx {
     const GPU_LIST_AT: usize = 11;
     const PERFORMANCE_GET_CURRENT_GPU_METRICS: usize = 18;
     const PERFORMANCE_GET_SUPPORTED_GPU_METRICS: usize = 21;
+    const GPU_TYPE: usize = 5;
     const SUPPORT_IS_SUPPORTED_GPU_POWER: usize = 8;
+    const SUPPORT_IS_SUPPORTED_GPU_TOTAL_BOARD_POWER: usize = 9;
     const METRICS_GPU_POWER: usize = 9;
+    const METRICS_GPU_TOTAL_BOARD_POWER: usize = 10;
+    /// `GPUTYPE_INTEGRATED` in `ADLX_GPU_TYPE`.
+    const GPU_TYPE_INTEGRATED: i32 = 1;
 
     /// The function at `index` in `object`'s vtable.
     ///
@@ -127,12 +135,26 @@ mod adlx {
         (result == OK && !out.is_null()).then_some(out)
     }
 
-    /// ADLX with the performance-monitoring service and the GPUs that report
-    /// power. Used from the one thread that opened it.
+    /// Whether ADLX calls `gpu` integrated; an unknown type counts as discrete.
+    ///
+    /// # Safety
+    /// `gpu` is a live IADLXGPU.
+    unsafe fn is_integrated(gpu: Object) -> bool {
+        let mut kind = 0i32;
+        let get_type: unsafe extern "system" fn(Object, *mut i32) -> i32 =
+            unsafe { std::mem::transmute(slot(gpu, GPU_TYPE)) };
+        (unsafe { get_type(gpu, &mut kind) }) == OK && kind == GPU_TYPE_INTEGRATED
+    }
+
+    /// ADLX with the performance-monitoring service and the GPUs it reads,
+    /// each with the metric slot it reads. Used from the one thread that
+    /// opened it.
     pub(super) struct Adlx {
         library: Library,
         performance: Object,
-        gpus: Vec<Object>,
+        gpus: Vec<(Object, usize)>,
+        /// The GPUs read are integrated ones, whose figure includes the CPU.
+        pub(super) apu: bool,
     }
 
     impl Adlx {
@@ -170,6 +192,7 @@ mod adlx {
                 library,
                 performance: std::ptr::null_mut(),
                 gpus: Vec::new(),
+                apu: false,
             };
             unsafe {
                 adlx.performance = get(system, SYSTEM_GET_PERFORMANCE_MONITORING_SERVICES, None)
@@ -179,44 +202,67 @@ mod adlx {
                     std::mem::transmute(slot(list, LIST_SIZE));
                 let at: unsafe extern "system" fn(Object, u32, *mut Object) -> i32 =
                     std::mem::transmute(slot(list, GPU_LIST_AT));
+                let mut discrete = Vec::new();
+                let mut integrated = Vec::new();
                 for index in 0..size(list) {
                     let mut gpu: Object = std::ptr::null_mut();
                     if at(list, index, &mut gpu) != OK || gpu.is_null() {
                         continue;
                     }
-                    if adlx.reports_power(gpu) {
-                        adlx.gpus.push(gpu);
-                    } else {
-                        release(gpu);
+                    match adlx.power_metric(gpu) {
+                        Some(metric) if is_integrated(gpu) => integrated.push((gpu, metric)),
+                        Some(metric) => discrete.push((gpu, metric)),
+                        None => release(gpu),
                     }
                 }
                 release(list);
+                // The discrete GPUs alone when there are any: an integrated
+                // GPU's figure is mostly the CPU's.
+                if discrete.is_empty() {
+                    adlx.apu = !integrated.is_empty();
+                    adlx.gpus = integrated;
+                } else {
+                    for (gpu, _) in integrated {
+                        release(gpu);
+                    }
+                    adlx.gpus = discrete;
+                }
             }
             Ok((!adlx.gpus.is_empty()).then_some(adlx))
         }
 
-        unsafe fn reports_power(&self, gpu: Object) -> bool {
-            let Some(support) = (unsafe {
+        /// The metric slot to read for `gpu`: total board power where the
+        /// driver reports it, like `nvidia-smi`'s `power.draw`, else the GPU's
+        /// own power; `None` when it reports neither.
+        unsafe fn power_metric(&self, gpu: Object) -> Option<usize> {
+            let support = unsafe {
                 get(
                     self.performance,
                     PERFORMANCE_GET_SUPPORTED_GPU_METRICS,
                     Some(gpu),
                 )
-            }) else {
-                return false;
+            }?;
+            let supports = |index: usize| {
+                let mut supported = false;
+                let is_supported: unsafe extern "system" fn(Object, *mut bool) -> i32 =
+                    unsafe { std::mem::transmute(slot(support, index)) };
+                (unsafe { is_supported(support, &mut supported) }) == OK && supported
             };
-            let mut supported = false;
-            let is_supported: unsafe extern "system" fn(Object, *mut bool) -> i32 =
-                unsafe { std::mem::transmute(slot(support, SUPPORT_IS_SUPPORTED_GPU_POWER)) };
-            let result = unsafe { is_supported(support, &mut supported) };
+            let metric = if supports(SUPPORT_IS_SUPPORTED_GPU_TOTAL_BOARD_POWER) {
+                Some(METRICS_GPU_TOTAL_BOARD_POWER)
+            } else if supports(SUPPORT_IS_SUPPORTED_GPU_POWER) {
+                Some(METRICS_GPU_POWER)
+            } else {
+                None
+            };
             unsafe { release(support) };
-            result == OK && supported
+            metric
         }
 
         /// The summed GPU power, or `None` when a GPU missed its reading.
         pub(super) fn read(&self) -> Option<f64> {
             let mut total = 0.0;
-            for &gpu in &self.gpus {
+            for &(gpu, metric) in &self.gpus {
                 // SAFETY: `performance` and `gpu` stay acquired until drop.
                 let metrics = unsafe {
                     get(
@@ -227,7 +273,7 @@ mod adlx {
                 }?;
                 let mut watts = 0.0f64;
                 let power: unsafe extern "system" fn(Object, *mut f64) -> i32 =
-                    unsafe { std::mem::transmute(slot(metrics, METRICS_GPU_POWER)) };
+                    unsafe { std::mem::transmute(slot(metrics, metric)) };
                 let result = unsafe { power(metrics, &mut watts) };
                 unsafe { release(metrics) };
                 if result != OK || !watts.is_finite() || watts < 0.0 {
@@ -243,7 +289,7 @@ mod adlx {
         fn drop(&mut self) {
             // SAFETY: each object was acquired by `open` and is released once.
             unsafe {
-                for &gpu in &self.gpus {
+                for &(gpu, _) in &self.gpus {
                     release(gpu);
                 }
                 if !self.performance.is_null() {
@@ -268,9 +314,10 @@ mod hwmon {
 
     /// The power file of each amdgpu card under `drm` (normally
     /// `/sys/class/drm`): `cardN/device/hwmon/hwmon*/power1_average`, or
-    /// `power1_input` where the kernel exposes that one instead. Connector
-    /// entries (`card0-DP-1`) and other vendors' cards are skipped.
-    pub(super) fn power_files(drm: &Path) -> Vec<PathBuf> {
+    /// `power1_input` where the kernel exposes that one instead, and whether
+    /// the card is an APU's. Connector entries (`card0-DP-1`) and other
+    /// vendors' cards are skipped.
+    pub(super) fn power_files(drm: &Path) -> Vec<(PathBuf, bool)> {
         let Ok(entries) = std::fs::read_dir(drm) else {
             return Vec::new();
         };
@@ -299,13 +346,33 @@ mod hwmon {
                     .collect();
                 monitors.sort();
                 monitors.into_iter().find_map(|monitor| {
-                    ["power1_average", "power1_input"]
+                    let file = ["power1_average", "power1_input"]
                         .into_iter()
                         .map(|name| monitor.join(name))
-                        .find(|file| file.is_file())
+                        .find(|file| file.is_file())?;
+                    Some((file, is_apu(&monitor)))
                 })
             })
             .collect()
+    }
+
+    /// amdgpu shows the northbridge voltage, labelled `vddnb`, on APUs only
+    /// (`amdgpu_hwmon_attributes_visible` in the kernel's `amdgpu_pm.c`).
+    fn is_apu(monitor: &Path) -> bool {
+        std::fs::read_to_string(monitor.join("in1_label"))
+            .is_ok_and(|label| label.trim() == "vddnb")
+    }
+
+    /// The files to read and whether they are APUs': the discrete cards when
+    /// there are any, else the APUs. `None` when there is no card.
+    pub(super) fn choose(cards: Vec<(PathBuf, bool)>) -> Option<(Vec<PathBuf>, bool)> {
+        let (apus, discrete): (Vec<_>, Vec<_>) = cards.into_iter().partition(|(_, apu)| *apu);
+        let apu = discrete.is_empty();
+        let files: Vec<PathBuf> = if apu { apus } else { discrete }
+            .into_iter()
+            .map(|(file, _)| file)
+            .collect();
+        (!files.is_empty()).then_some((files, apu))
     }
 
     /// The summed power of `files`, in watts (the files hold microwatts), or
@@ -320,7 +387,7 @@ mod hwmon {
 
 #[cfg(test)]
 mod tests {
-    use super::hwmon::{power_files, read_watts};
+    use super::hwmon::{choose, power_files, read_watts};
     use std::fs;
     use std::path::Path;
 
@@ -367,7 +434,8 @@ mod tests {
             "0x1002",
             Some(("power1_average", "99000000")),
         );
-        let files = power_files(&root);
+        let (files, apu) = choose(power_files(&root)).unwrap();
+        assert!(!apu);
         assert_eq!(files.len(), 2);
         assert_eq!(read_watts(&files), Some(17.5));
         fs::remove_dir_all(root).unwrap();
@@ -392,7 +460,42 @@ mod tests {
             Some(("power1_average", "12000000")),
         );
         card(&root, "card1", "0x1002", Some(("power1_average", "n/a")));
-        assert_eq!(read_watts(&power_files(&root)), None);
+        assert_eq!(read_watts(&choose(power_files(&root)).unwrap().0), None);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    fn apu(drm: &Path, name: &str, microwatts: &str) {
+        card(drm, name, "0x1002", Some(("power1_average", microwatts)));
+        fs::write(
+            drm.join(name).join("device/hwmon/hwmon3/in1_label"),
+            "vddnb\n",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn an_apu_alone_is_read_as_one() {
+        let root = drm("apu");
+        apu(&root, "card0", "30000000");
+        let (files, apu) = choose(power_files(&root)).unwrap();
+        assert!(apu);
+        assert_eq!(read_watts(&files), Some(30.0));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_discrete_card_leaves_the_apu_out() {
+        let root = drm("mixed");
+        apu(&root, "card0", "30000000");
+        card(
+            &root,
+            "card1",
+            "0x1002",
+            Some(("power1_average", "180000000")),
+        );
+        let (files, apu) = choose(power_files(&root)).unwrap();
+        assert!(!apu);
+        assert_eq!(read_watts(&files), Some(180.0));
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -405,6 +508,10 @@ mod tests {
         let adlx = super::adlx::Adlx::open()
             .expect("ADLX loads")
             .expect("a GPU reports power");
+        println!(
+            "ADLX reads {}",
+            if adlx.apu { "an APU" } else { "discrete GPUs" }
+        );
         for _ in 0..10 {
             let watts = adlx.read().expect("a reading");
             println!("ADLX GPU power: {watts:.1} W");
