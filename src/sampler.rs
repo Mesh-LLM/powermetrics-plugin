@@ -9,6 +9,9 @@
 //! reports power (Jetson's integrated GPU answers `[N/A]`) stops the sampler
 //! after its first round, and so does a macOS VM, whose GPU reads 0 W.
 
+#[cfg(windows)]
+mod job;
+
 use anyhow::Result;
 use tokio::io::{AsyncBufRead, Lines};
 use tokio::sync::mpsc;
@@ -155,8 +158,11 @@ mod nvidia {
         if !listing.status.success() || gpus == 0 {
             return Ok(false);
         }
-        // `kill_on_drop` ends nvidia-smi with the plugin when it returns; a
-        // plugin killed outright can leave it looping on Windows.
+        // `kill_on_drop` ends nvidia-smi with the plugin when it returns. On
+        // Windows a plugin killed outright would leave it looping, so it also
+        // runs in a job that Windows closes with the plugin.
+        #[cfg(windows)]
+        let job = super::job::KillOnClose::new();
         let mut child = Command::new("nvidia-smi")
             .args([
                 "--query-gpu=index,power.draw",
@@ -169,6 +175,19 @@ mod nvidia {
             .kill_on_drop(true)
             .spawn()
             .context("start nvidia-smi power sampling")?;
+        // Held until sampling ends, since closing the job ends nvidia-smi.
+        // Without it the readings still work; only that cleanup is lost.
+        #[cfg(windows)]
+        let _job = match job.and_then(|job| {
+            let process = child.raw_handle().ok_or(std::io::ErrorKind::NotFound)?;
+            job.assign(process).map(|()| job)
+        }) {
+            Ok(job) => Some(job),
+            Err(error) => {
+                eprintln!("powermetrics-plugin: nvidia-smi may outlive the plugin: {error}");
+                None
+            }
+        };
         let stdout = child
             .stdout
             .take()
