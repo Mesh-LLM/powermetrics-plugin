@@ -1,0 +1,110 @@
+name: Release
+# Push a tag vX.Y.Z (matching Cargo.toml/plugin.toml) to build and publish the
+# archives that `mesh-llm plugins install Mesh-LLM/powermetrics-plugin`
+# downloads. PRs touching packaging run the same builds as a dry run (no publish).
+on:
+  push:
+    tags: ['v*']
+  pull_request:
+    paths: ['.github/workflows/release.yml', 'scripts/package.py', 'Cargo.toml', 'Cargo.lock', 'plugin.toml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            runner: macos-15
+            exe: ''
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-22.04
+            exe: ''
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-22.04-arm
+            exe: ''
+          - target: x86_64-pc-windows-msvc
+            runner: windows-2022
+            exe: .exe
+    env:
+      EXE: ${{ matrix.exe }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Check tag matches version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          set -euo pipefail
+          v=${GITHUB_REF_NAME#v}
+          grep -qxF "version = \"$v\"" Cargo.toml
+          grep -qxF "version = \"$v\"" plugin.toml
+      - name: Install Rust if the runner has none
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v cargo >/dev/null; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          fi
+      - name: Build
+        shell: bash
+        run: cargo build --locked --release
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" = Windows ]; then python=python; else python=python3; fi
+          $python scripts/package.py "target/release/powermetrics-plugin$EXE" "${{ matrix.target }}"
+      - name: Smoke the packaged archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" = Windows ]; then python=python; else python=python3; fi
+          archive=$(ls dist/powermetrics-plugin-${{ matrix.target }}.* | grep -v '\.sha256$')
+          t=$(mktemp -d)
+          $python -c 'import shutil, sys; shutil.unpack_archive(sys.argv[1], sys.argv[2])' "$archive" "$t"
+          grep -q 'command = "powermetrics-plugin"' "$t/powermetrics-plugin/plugin.toml"
+          # Outside a host the plugin must start, then stop for want of an endpoint.
+          set +e
+          out=$("$t/powermetrics-plugin/powermetrics-plugin$EXE" 2>&1 </dev/null)
+          status=$?
+          set -e
+          echo "$out"
+          test "$status" -ne 0
+          grep -q 'MESH_LLM_PLUGIN_ENDPOINT' <<<"$out"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: powermetrics-plugin-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release create "$GITHUB_REF_NAME" --verify-tag --title "powermetrics-plugin $GITHUB_REF_NAME" \
+            --notes "Install or update: \`mesh-llm plugins install Mesh-LLM/powermetrics-plugin\`, then set \`allow_inference_observation = true\` on it. See README." \
+            dist/*
