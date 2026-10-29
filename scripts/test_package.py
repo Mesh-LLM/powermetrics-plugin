@@ -30,7 +30,8 @@ class PackageTest(unittest.TestCase):
             executable = archive.getmember('powermetrics-plugin/powermetrics-plugin')
         self.assertTrue(executable.mode & 0o111, 'the executable keeps its execute bit')
         self.assertTrue({'powermetrics-plugin/plugin.toml', 'powermetrics-plugin/README.md',
-                         'powermetrics-plugin/LICENSE'} <= names)
+                         'powermetrics-plugin/LICENSE', 'powermetrics-plugin/plugin-manifest.json',
+                         'powermetrics-plugin/bundle/energy.js'} <= names)
 
     def test_a_windows_target_gets_zips_with_an_exe(self):
         paths = package.package(self.binary, 'x86_64-pc-windows-msvc', self.root / 'dist')
@@ -39,6 +40,8 @@ class PackageTest(unittest.TestCase):
             names = set(archive.namelist())
         self.assertIn('powermetrics-plugin/powermetrics-plugin.exe', names)
         self.assertIn('powermetrics-plugin/plugin.toml', names)
+        self.assertIn('powermetrics-plugin/plugin-manifest.json', names)
+        self.assertIn('powermetrics-plugin/bundle/energy.js', names)
 
     def test_each_archive_has_a_matching_checksum_file(self):
         for path in package.package(self.binary, 'aarch64-apple-darwin', self.root / 'dist'):
