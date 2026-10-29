@@ -138,9 +138,18 @@ mod adlx {
     impl Adlx {
         /// `None` when ADLX loads but no GPU reports power.
         pub(super) fn open() -> Result<Option<Self>> {
-            // SAFETY: the system DLL the AMD driver installs; its exports are
-            // called with the signatures the ADLX headers declare.
-            let library = unsafe { Library::new("amdadlx64.dll") }.context("load amdadlx64.dll")?;
+            // SAFETY: the system DLL the AMD driver installs, looked up in
+            // System32 only so a same-named file next to the plugin is never
+            // loaded instead; its exports are called with the signatures the
+            // ADLX headers declare.
+            let library: Library = unsafe {
+                libloading::os::windows::Library::load_with_flags(
+                    "amdadlx64.dll",
+                    libloading::os::windows::LOAD_LIBRARY_SEARCH_SYSTEM32,
+                )
+            }
+            .context("load amdadlx64.dll from System32")?
+            .into();
             let mut version = 0u64;
             let mut system: Object = std::ptr::null_mut();
             unsafe {
