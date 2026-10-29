@@ -170,7 +170,7 @@ function mountEnergyPage({ element, host }) {
     status.textContent = `Source: ${data.source ?? "unknown"} · ${state}`;
     status.style.color = entry.state === "ready" ? tokens.foreground : tokens.warn;
 
-    if (typeof data.watts === "number" && data.last_reading_unix_ns !== lastReading) {
+    if (typeof data.watts === "number" && data.last_reading_unix_ns > (lastReading ?? 0)) {
       lastReading = data.last_reading_unix_ns;
       history.push(data.watts);
       if (history.length > HISTORY) history.shift();
@@ -191,27 +191,40 @@ function mountEnergyPage({ element, host }) {
     draw(data.idle_watts);
   }
 
+  // One request at a time, given up after a poll interval, and the next one
+  // scheduled only once it settles, so a stalled host never piles requests up.
   let stopped = false;
+  let timer = null;
+  let inFlight = null;
   async function poll() {
+    inFlight = new AbortController();
+    const giveUp = setTimeout(() => inFlight.abort(), POLL_MS);
     try {
-      const response = await fetch("/api/status", { headers: { accept: "application/json" } });
+      const response = await fetch("/api/status", {
+        headers: { accept: "application/json" },
+        signal: inFlight.signal,
+      });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const body = await response.json();
       if (!stopped) render(body?.plugins?.[PLUGIN]);
     } catch (error) {
       if (!stopped) {
-        status.textContent = `Status unavailable: ${error.message}`;
+        status.textContent = `Status unavailable: ${error.name === "AbortError" ? "no answer" : error.message}`;
         status.style.color = tokens.bad;
       }
+    } finally {
+      clearTimeout(giveUp);
+      inFlight = null;
+      if (!stopped) timer = setTimeout(poll, POLL_MS);
     }
   }
   poll();
-  const timer = setInterval(poll, POLL_MS);
 
   return {
     unmount() {
       stopped = true;
-      clearInterval(timer);
+      clearTimeout(timer);
+      inFlight?.abort();
       element.replaceChildren();
     },
   };
