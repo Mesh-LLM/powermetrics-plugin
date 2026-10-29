@@ -51,14 +51,18 @@ impl Tariff {
                     if !parsed.is_finite() || parsed <= 0.0 {
                         bail!("{PRICE} must be a positive price, got {text}");
                     }
-                    price = Some(parsed);
+                    if price.replace(parsed).is_some() {
+                        bail!("{PRICE} is given twice");
+                    }
                 }
                 CURRENCY => {
                     let text = value()?;
                     if text.trim().is_empty() {
                         bail!("{CURRENCY} must not be empty");
                     }
-                    currency = Some(text.trim().to_string());
+                    if currency.replace(text.trim().to_string()).is_some() {
+                        bail!("{CURRENCY} is given twice");
+                    }
                 }
                 other => bail!("unknown argument {other}; expected {PRICE} or {CURRENCY}"),
             }
@@ -145,6 +149,8 @@ mod tests {
             &[CURRENCY, "EUR"],
             &[PRICE, "0.2", CURRENCY, " "],
             &["--electricity-price", "0.2"],
+            &[PRICE, "0.2", PRICE, "0.3"],
+            &[PRICE, "0.2", CURRENCY, "EUR", CURRENCY, "USD"],
         ] {
             assert!(Tariff::from_args(args(bad)).is_err(), "accepted {bad:?}");
         }
