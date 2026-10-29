@@ -51,7 +51,8 @@ function duration(seconds) {
   return `${significant(seconds / 3600, 2)} h`;
 }
 
-function mountEnergyPage({ element, host, page }) {
+// The console titles the page itself, so it starts with the status line.
+function mountEnergyPage({ element, host }) {
   const { tokens } = host.appearance;
   Object.assign(element.style, {
     display: "grid",
@@ -60,11 +61,6 @@ function mountEnergyPage({ element, host, page }) {
     padding: "4px",
   });
 
-  const heading = el(
-    "h2",
-    { color: tokens.foreground, fontSize: "1.25rem", fontWeight: "650", margin: "0" },
-    page.label,
-  );
   const status = el("p", { color: tokens.foreground, margin: "0", opacity: "0.8" }, "Waiting for the first reading…");
   status.setAttribute("role", "status");
 
@@ -140,7 +136,7 @@ function mountEnergyPage({ element, host, page }) {
   const chartScale = el("p", { color: tokens.foreground, fontSize: "0.75rem", margin: "0", opacity: "0.7" }, "");
   chartPanel.append(chartTitle, svg, chartScale);
 
-  element.append(heading, status, grid, chartPanel);
+  element.append(status, grid, chartPanel);
 
   const history = [];
   let lastReading = null;
