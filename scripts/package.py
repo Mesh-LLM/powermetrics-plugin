@@ -4,7 +4,8 @@
 
 Mesh resolves a GitHub reference by repository name, so the archive is rooted
 under `powermetrics-plugin/` and holds `plugin.toml` and an executable of that
-name. Each archive is written twice, under the versioned name and the stable
+name, plus the console page: `plugin-manifest.json` declares it and `bundle/`
+holds its script. Each archive is written twice, under the versioned name and the stable
 alias the installer falls back to, each with a `.sha256` file.
 """
 import argparse
@@ -46,8 +47,9 @@ def package(binary, target, output):
         stage = Path(temporary) / NAME
         stage.mkdir()
         shutil.copy2(binary, stage / executable)
-        for name in ('plugin.toml', 'README.md', 'LICENSE'):
+        for name in ('plugin.toml', 'plugin-manifest.json', 'README.md', 'LICENSE'):
             shutil.copy2(ROOT / name, stage / name)
+        shutil.copytree(ROOT / 'bundle', stage / 'bundle')
         first = output / names[0]
         if windows(target):
             with zipfile.ZipFile(first, 'w', zipfile.ZIP_DEFLATED) as archive:

@@ -20,6 +20,7 @@ and shows it in the node's `GET /api/status`:
       "busy_seconds": 912.0,
       "idle_seconds": 3120.0,
       "last_reading_unix_ns": 1793404799512000000,
+      "watts": 212.7,
       "lost_events": 0
     }
   }
@@ -35,7 +36,7 @@ plugin's:
   that idle draw, and `wh_per_1k_output_tokens_total` including it;
 - `output_tokens`, `busy_seconds`, `idle_seconds`: what the rates are made of;
 - `source` and `last_reading_unix_ns`, so a sensor that went quiet shows even
-  while the snapshot is fresh;
+  while the snapshot is fresh, and `watts`, that last reading;
 - `lost_events`: observation events the host dropped while this plugin read
   too slowly. The work running through a loss is left out of the rates.
 
@@ -128,6 +129,22 @@ the same currency:
 They follow the energy rates, so they stay `null` until those are measured. The
 figures cover the GPU's own sensor, not the rest of the machine, so they are a
 lower bound. An unknown or malformed argument stops the plugin at startup.
+
+## Energy page
+
+The plugin adds an Energy page to the node's console. It shows the same
+snapshot, refreshed every 5 s: the board power now, the idle draw, both
+energy rates, the costs when a price is set, and the board power of the last
+10 minutes against the idle draw. The page reads `/api/status` like any other
+client and keeps nothing.
+
+`plugin-manifest.json` declares the page to the installer and `bundle/energy.js`
+draws it. The manifest is generated from the binary, and a test fails when the
+two differ:
+
+```sh
+cargo run -- --print-package-manifest > plugin-manifest.json
+```
 
 ## Build from source
 

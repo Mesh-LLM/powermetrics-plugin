@@ -6,7 +6,7 @@ on:
   push:
     tags: ['v*']
   pull_request:
-    paths: ['.github/workflows/release.yml', 'scripts/package.py', 'Cargo.toml', 'Cargo.lock', 'plugin.toml']
+    paths: ['.github/workflows/release.yml', 'scripts/package.py', 'Cargo.toml', 'Cargo.lock', 'plugin.toml', 'plugin-manifest.json', 'bundle/**']
   workflow_dispatch:
 permissions:
   contents: read
@@ -79,6 +79,10 @@ jobs:
           echo "$out"
           test "$status" -ne 0
           grep -q 'MESH_LLM_PLUGIN_ENDPOINT' <<<"$out"
+          # The packaged manifest is the one the binary declares, and its page script ships.
+          "$t/powermetrics-plugin/powermetrics-plugin$EXE" --print-package-manifest | tr -d '\r' > "$t/declared.json"
+          tr -d '\r' < "$t/powermetrics-plugin/plugin-manifest.json" | diff - "$t/declared.json"
+          test -s "$t/powermetrics-plugin/bundle/energy.js"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: powermetrics-plugin-${{ matrix.target }}
