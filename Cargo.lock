@@ -815,6 +815,7 @@ dependencies = [
  "macmon",
  "mesh-llm-plugin",
  "serde",
+ "serde_json",
  "tokio",
 ]
 
