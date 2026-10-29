@@ -142,14 +142,16 @@ mod adlx {
             // System32 only so a same-named file next to the plugin is never
             // loaded instead; its exports are called with the signatures the
             // ADLX headers declare.
-            let library: Library = unsafe {
+            let Ok(library) = (unsafe {
                 libloading::os::windows::Library::load_with_flags(
                     "amdadlx64.dll",
                     libloading::os::windows::LOAD_LIBRARY_SEARCH_SYSTEM32,
                 )
-            }
-            .context("load amdadlx64.dll from System32")?
-            .into();
+            }) else {
+                // No AMD driver: a missing source ends quietly.
+                return Ok(None);
+            };
+            let library: Library = library.into();
             let mut version = 0u64;
             let mut system: Object = std::ptr::null_mut();
             unsafe {

@@ -118,10 +118,9 @@ pub fn start(readings: mpsc::UnboundedSender<(&'static str, Reading)>) {
         match nvidia::sample(readings.clone()).await {
             Ok(true) => {}
             Ok(false) => amd::start(readings),
-            Err(error) => {
-                eprintln!("powermetrics-plugin: nvidia-smi unavailable: {error:#}");
-                amd::start(readings);
-            }
+            // nvidia-smi listed GPUs and then failed: falling back to AMD would
+            // publish an APU's figure as this node's.
+            Err(error) => eprintln!("powermetrics-plugin: nvidia-smi stopped: {error:#}"),
         }
     });
 }
@@ -136,17 +135,19 @@ mod nvidia {
 
     const SOURCE: &str = "nvidia-smi";
 
-    /// `Ok(false)` when `nvidia-smi` runs but lists no GPU.
+    /// `Ok(false)` when `nvidia-smi` is missing or lists no GPU.
     pub(super) async fn sample(
         readings: mpsc::UnboundedSender<(&'static str, Reading)>,
     ) -> Result<bool> {
-        let listing = Command::new("nvidia-smi")
+        let Ok(listing) = Command::new("nvidia-smi")
             .args(["--query-gpu=index", "--format=csv,noheader"])
             .stdin(Stdio::null())
             .stderr(Stdio::null())
             .output()
             .await
-            .context("run nvidia-smi")?;
+        else {
+            return Ok(false);
+        };
         let gpus = String::from_utf8_lossy(&listing.stdout)
             .lines()
             .filter(|line| !line.trim().is_empty())
