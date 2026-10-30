@@ -201,6 +201,29 @@ mod tests {
         assert_eq!(priced["currency"], "EUR");
         assert!((priced["cost_per_1m_output_tokens"].as_f64().unwrap() - 0.1).abs() < 1e-12);
         assert!((priced["cost_per_1m_output_tokens_total"].as_f64().unwrap() - 0.15).abs() < 1e-12);
+        assert!(priced.get("btc_price").is_none());
+        assert!(priced.get("cost_msat_per_1m_output_tokens").is_none());
+
+        let args = [
+            "--electricity-price-per-kwh",
+            "0.25",
+            "--btc-price",
+            "100000",
+        ]
+        .map(String::from);
+        let in_msat = snapshot(price::Tariff::from_args(args).unwrap());
+        assert_eq!(in_msat["btc_price"], 100_000.0);
+        assert!(
+            (in_msat["cost_msat_per_1m_output_tokens"].as_f64().unwrap() - 100_000.0).abs() < 1e-6
+        );
+        assert!(
+            (in_msat["cost_msat_per_1m_output_tokens_total"]
+                .as_f64()
+                .unwrap()
+                - 150_000.0)
+                .abs()
+                < 1e-6
+        );
     }
 
     /// Release packaging ships `plugin-manifest.json` as checked in: it must be
