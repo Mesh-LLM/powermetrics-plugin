@@ -1,12 +1,16 @@
 // The console's Energy page: the snapshot this plugin publishes under
 // `plugins.powermetrics-plugin` in `/api/status`, read every 5 seconds, plus
-// the board power of the last minutes as an SVG line.
+// the board power of the last minutes as an SVG line, and the node's own
+// prices from `/v1/models` against what serving costs it.
 
 const PLUGIN = "powermetrics-plugin";
 const POLL_MS = 5000;
+// Prices change rarely: the model listing is read every 30 seconds.
+const PRICES_MS = 30000;
 // Ten minutes of readings at one per poll.
 const HISTORY = 120;
 const SVG_NS = "http://www.w3.org/2000/svg";
+const MSAT_PER_BTC = 1e11;
 
 // The host imports this module and calls registerMeshPluginUi(host).
 const moduleRegistration = {
@@ -43,6 +47,49 @@ function money(value, currency) {
     }
   }
   return `${significant(value)}${currency ? ` ${currency}` : ""}`;
+}
+
+function formatMsat(value) {
+  if (value >= 1e6) return `${significant(value / 1e6)}M msat`;
+  if (value >= 1e3) return `${significant(value / 1e3)}k msat`;
+  return `${significant(value)} msat`;
+}
+
+// The `payment` block of `/v1/models`, which the console's chat reads too:
+// for each model this node serves, its own output price in msat per million
+// tokens (null when it serves the model free) and the cheapest other seller.
+function ownPrices(body) {
+  const rows = [];
+  for (const item of Array.isArray(body?.data) ? body.data : []) {
+    const offers = Array.isArray(item?.payment?.offers) ? item.payment.offers : [];
+    const own = offers.find((offer) => offer?.local === true);
+    if (typeof item?.id !== "string" || !own) continue;
+    const rate = (offer) => (offer?.paid === true ? offer.pricing?.output_msat_per_million : undefined);
+    const others = offers
+      .filter((offer) => offer?.local !== true)
+      .map(rate)
+      .filter((value) => typeof value === "number");
+    rows.push({
+      model: item.id,
+      price: typeof rate(own) === "number" ? rate(own) : null,
+      market: others.length > 0 ? Math.min(...others) : null,
+    });
+  }
+  return rows;
+}
+
+// A price against the two costs in msat: below the cost on top of idle loses
+// money on every token; below the idle-included cost pays only when the
+// machine runs anyway.
+function verdict(price, data, tokens) {
+  if (price === null) return { text: "Free", color: tokens.foreground };
+  if (typeof data?.btc_price !== "number") return { text: "Set --btc-price to compare", color: tokens.foreground };
+  const cost = data.cost_msat_per_1m_output_tokens;
+  const total = data.cost_msat_per_1m_output_tokens_total;
+  if (cost == null) return { text: "Cost known after a request", color: tokens.foreground };
+  if (price < cost) return { text: "Below cost", color: tokens.bad };
+  if (total != null && price < total) return { text: "Pays only if the machine runs anyway", color: tokens.warn };
+  return { text: "Above cost", color: tokens.good };
 }
 
 function duration(seconds) {
@@ -136,10 +183,68 @@ function mountEnergyPage({ element, host }) {
   const chartScale = el("p", { color: tokens.foreground, fontSize: "0.75rem", margin: "0", opacity: "0.7" }, "");
   chartPanel.append(chartTitle, svg, chartScale);
 
-  element.append(status, grid, chartPanel);
+  const pricePanel = el("section", {
+    background: tokens.panelStrong,
+    border: `1px solid ${tokens.border}`,
+    borderRadius: tokens.radiusLarge,
+    display: "none",
+    gap: "8px",
+    padding: "14px 16px",
+  });
+  pricePanel.setAttribute("aria-label", "Your prices against your cost");
+  const priceTable = el("div", {
+    alignItems: "baseline",
+    columnGap: "16px",
+    display: "grid",
+    gridTemplateColumns: "minmax(0, 2fr) repeat(3, minmax(0, 1fr))",
+    rowGap: "6px",
+  });
+  const priceNote = el("p", { color: tokens.foreground, fontSize: "0.75rem", margin: "0", opacity: "0.7" }, "");
+  pricePanel.append(
+    el("h3", { color: tokens.foreground, fontSize: "0.8125rem", fontWeight: "600", margin: "0" }, "Your prices against your cost"),
+    priceTable,
+    priceNote,
+  );
+
+  element.append(status, grid, pricePanel, chartPanel);
 
   const history = [];
   let lastReading = null;
+  let latest = null;
+  let priceRows = [];
+  let nextPrices = 0;
+
+  // Output prices per million tokens, in msat and, with --btc-price, in the
+  // tariff's currency too.
+  function priceText(msat, data) {
+    if (msat === null) return "–";
+    const inCurrency = typeof data?.btc_price === "number" ? ` (${money((msat / MSAT_PER_BTC) * data.btc_price, data.currency)})` : "";
+    return `${formatMsat(msat)}${inCurrency}`;
+  }
+
+  function renderPrices() {
+    pricePanel.style.display = priceRows.length > 0 ? "grid" : "none";
+    if (priceRows.length === 0) return;
+    const cell = (text, style = {}) => el("span", { color: tokens.foreground, fontSize: "0.8125rem", overflowWrap: "anywhere", ...style }, text);
+    const head = (text) => cell(text, { fontSize: "0.75rem", fontWeight: "600", opacity: "0.7" });
+    const cells = [head("Model"), head("Your price"), head("Cheapest other seller"), head("")];
+    for (const row of priceRows) {
+      const { text, color } = verdict(row.price, latest, tokens);
+      cells.push(
+        cell(row.model),
+        cell(row.price === null ? "free" : priceText(row.price, latest)),
+        cell(priceText(row.market, latest)),
+        cell(text, { color, fontWeight: "600" }),
+      );
+    }
+    priceTable.replaceChildren(...cells);
+    const cost = latest?.cost_msat_per_1m_output_tokens;
+    const total = latest?.cost_msat_per_1m_output_tokens_total;
+    priceNote.textContent =
+      cost != null
+        ? `Prices and costs per million output tokens. Your cost: ${formatMsat(cost)} on top of idle${total != null ? `, ${formatMsat(total)} idle included` : ""}, measured across every model this node serves.`
+        : "Prices per million output tokens. Your cost shows here once the plugin has --electricity-price-per-kwh and --btc-price and has measured a request.";
+  }
 
   function show(key, text) {
     cards[key].value.textContent = text;
@@ -189,6 +294,8 @@ function mountEnergyPage({ element, host }) {
     show("tokens", (data.output_tokens ?? 0).toLocaleString());
     show("time", `${duration(data.busy_seconds ?? 0)} / ${duration(data.idle_seconds ?? 0)}`);
     draw(data.idle_watts);
+    latest = data;
+    renderPrices();
   }
 
   // One request at a time, given up after a poll interval, and the next one
@@ -207,6 +314,20 @@ function mountEnergyPage({ element, host }) {
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const body = await response.json();
       if (!stopped) render(body?.plugins?.[PLUGIN]);
+      if (!stopped && Date.now() >= nextPrices) {
+        nextPrices = Date.now() + PRICES_MS;
+        // The prices are extra: a listing that fails leaves the energy
+        // figures shown and the last prices in place.
+        try {
+          const models = await fetch("/v1/models", { headers: { accept: "application/json" }, signal: inFlight.signal });
+          if (models.ok) {
+            priceRows = ownPrices(await models.json());
+            if (!stopped) renderPrices();
+          }
+        } catch {
+          // Tried again in PRICES_MS.
+        }
+      }
     } catch (error) {
       if (!stopped) {
         status.textContent = `Status unavailable: ${error.name === "AbortError" ? "no answer" : error.message}`;

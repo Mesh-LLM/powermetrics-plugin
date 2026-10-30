@@ -130,6 +130,17 @@ They follow the energy rates, so they stay `null` until those are measured. The
 figures cover the GPU's own sensor, not the rest of the machine, so they are a
 lower bound. An unknown or malformed argument stops the plugin at startup.
 
+Sellers price in msat per million tokens. Add the price of one bitcoin, in the
+same currency as the electricity, and both costs are also given in msat:
+
+```toml
+args = ["--electricity-price-per-kwh", "0.25", "--currency", "EUR", "--btc-price", "95000"]
+```
+
+`data` then also carries `btc_price`, `cost_msat_per_1m_output_tokens` and
+`cost_msat_per_1m_output_tokens_total`. The plugin asks no outside service for
+the rate, so update it yourself when it moves.
+
 ## Energy page
 
 The plugin adds an Energy page to the node's console. It shows the same
@@ -137,6 +148,18 @@ snapshot, refreshed every 5 s: the board power now, the idle draw, both
 energy rates, the costs when a price is set, and the board power of the last
 10 minutes against the idle draw. The page reads `/api/status` like any other
 client and keeps nothing.
+
+For each model the node serves, the page also sets the node's own output price
+against its cost, from the `payment` block of `/v1/models` read every 30 s:
+
+- **Above cost**: the price covers the cost with the idle draw included;
+- **Pays only if the machine runs anyway**: above the cost on top of idle, below
+  the cost with idle included;
+- **Below cost**: every token loses money.
+
+It shows the cheapest other seller of the same model next to it. The cost is
+measured across every model the node serves, not per model, and the
+comparison needs `--btc-price`; without it the prices show in msat only.
 
 `plugin-manifest.json` declares the page to the installer and `bundle/energy.js`
 draws it. The manifest is generated from the binary, and a test fails when the
