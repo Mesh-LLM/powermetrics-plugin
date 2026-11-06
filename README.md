@@ -152,8 +152,9 @@ client and keeps nothing.
 For each model the node prices, the page also sets its output price against its
 cost. Since mesh-llm 0.79 prices live in the `pay-lightning` plugin, so the page
 reads them every 30 s with its `pricing` command (`POST
-/api/plugins/pay-lightning/tools/control`); without that plugin the panel stays
-hidden:
+/api/plugins/pay-lightning/tools/control`). pay-lightning answers only once a
+wallet plugin is bound to it; without either, the panel stays hidden and the
+energy figures show as usual:
 
 - **Above cost**: the price covers the cost with the idle draw included;
 - **Pays only if the machine runs anyway**: above the cost on top of idle, below
